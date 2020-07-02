@@ -1,0 +1,271 @@
+﻿<!doctype html>
+<html lang="en">
+
+	<head>
+		<meta charset="utf-8">
+
+		<title>Lock Anatomy and Scalable Multicore Programming</title>
+		<meta name="description" content="Writing high performance systems in .NET">
+		<meta name="author" content="Bartosz Adamczewski">
+
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+		<link rel="stylesheet" href="css/reveal.min.css">
+		<link rel="stylesheet" href="css/theme/sky.css" id="theme">
+
+		<!-- For syntax highlighting -->
+		<link rel="stylesheet" href="lib/css/zenburn.css">
+
+		<!-- If the query includes 'print-pdf', use the PDF print sheet -->
+		<script>
+			document.write( '<link rel="stylesheet" href="css/print/' + ( window.location.search.match( /print-pdf/gi ) ? 'pdf' : 'paper' ) + '.css" type="text/css" media="print">' );
+		</script>
+
+		<!--[if lt IE 9]>
+		<script src="lib/js/html5shiv.js"></script>
+		<![endif]-->
+	</head>
+
+	<body>
+		<div class="reveal">
+			<!-- Any section element inside of this container is displayed as a slide -->
+			<div class="slides">
+				<section>
+					<h1 style="font-size: 1.45em;">Lock Anatomy</h1>
+					<h1 style="font-size: 1.45em;">And</h1>
+					<h1 style="font-size: 1.45em;">Scalable Multicore Programming</h1>
+					<!--<h3 style="text-shadow: 0px 0px 6px rgba(0, 0, 0, 0.2);">And cache friendly code</h3>-->
+					<p></p>
+					<p>Bartosz Adamczewski</p>
+					<p>
+						<a href="https://twitter.com/badamczewski01">@badamczewski01</a>
+					</p>
+				</section>
+				<section>
+					<h2>Let me start by citing:</h2>
+					<h3>"Concurrency is hard"<h3>
+					<p style="float:right">- Every programmer ever</p>
+				</section>
+				<section>
+					<h2>Not convinced?!</h2>
+					<img src="img/mars.png"/>
+				</section>
+				<section>
+					<h2>How does 'this' relate to multicore?</h2>
+				</section>
+				<section>
+					<h2>Uhh ohh</h2>
+					<ul>
+						<li><a href="#/lock">Lock?</a></li> <!-- What have we learned: volatile, memory barier -->
+						<li><a href="#/condvar">Condition Variable</a></li> <!-- What have we learned:  -->
+						<li><a href="#/monitor">Monitor</a></li> <!-- What have we learned: volatile, memory barier -->
+						<li><a href="#/mcs">MCS Lock</a></li> <!-- What have we learned: Cache Line Contention -->
+						<li><a href="#/future">Current Research</a></li>
+						<li><a href="#/credits">Credits</a></li>
+					</ul>
+				</section>
+				<section>
+					<h2>Threading System</h2>
+					<img src="img/thread.png"/>
+				</section>
+				<section id="lock">
+					<section>
+						<h2>Lock?</h2>
+						<p>Mutual Exclusion.</p>
+						<pre><code data-trim>
+public void Acquire() { /* take the ownership of the lock */ }
+public void Release() { /* give up ownership of the lock */ }
+</code></pre>		
+					</section>
+					<section>
+						<h2>Lock?</h2>
+						<p>Mutual Exclusion.</p>
+						<img src="img/lock.png"/>
+					</section>
+					<section>
+					<h2>Petersons Lock</h2>	
+                    <p>Two variable state lock.</p>	
+						<pre><code data-trim>
+_interested = new bool[2];
+	
+public void Enter(int id) {
+    int he = 1 - id;
+    _interested[id] = true;
+    _victim = id;
+            
+    while (_interested[he] && _victim == id)
+    {
+        continue;
+    }
+}
+
+public void Exit(int id) {
+    _interested[id] = false;
+}
+</code></pre>						
+					</section>
+					<section>
+					<h2>Volatile?</h2>
+					<img src="img/volatile.jpg"/>
+					</section>
+					<section>
+					<h2>Volatile?</h2>
+					<img src="img/mem.png"/>
+					</section>
+					<section>
+					<h2>Spin Lock</h2>	
+					<p>What the name implies.</p>	
+					<pre><code data-trim>
+public void Acquire()
+{
+    while (Interlocked.CompareExchange(ref locker, 1, 0) != 0)
+}
+		
+public void Release()
+{
+    Interlocked.Exchange(ref locker, 0);
+}
+</code></pre>					
+					</section>
+					<section>
+						<h2>Lock?</h2>
+						<p>Fundamental construct for correct multi-core programs.</p>
+					</section>	
+</section>					
+                <section id="condvar">
+                    <section>
+                        <h2>Condition Variable</h2>
+						<p>Don't (busy) wait, get notified instead!</p>
+						<pre><code data-trim>
+public void Wait(Lock l) 
+{ /* release the lock, add thread1 to wait queue, sleep, acquire */ }
+
+public void Signal() 
+{ /* remove the waiting thread1 from wait queue */ }
+</code></pre>
+                    </section>
+					<section>
+                        <h2>Condition Variable</h2>
+						<p>Don't (busy) wait, get notified instead!</p>
+						<img src="img/condvar.png"/>
+					</section>
+					<section>
+						<h2>Condition Variable</h2>
+                        <pre><code data-trim>
+public void Wait(Lock l) {
+    while (Interlocked.CompareExchange(ref busy, 1, 0) != 0) { }
+    l.Release();
+    WaitingThread curr = new WaitingThread();
+    waitQueue.Enqueue(curr);
+    busy = 0;
+    curr.Sleep();
+    l.Acquire();
+}
+
+public void Signal() {
+    while (Interlocked.CompareExchange(ref busy, 1, 0) != 0) { }
+    if (waitQueue.Count != 0) {
+        WaitingThread curr = waitQueue.Dequeue();
+        Interlocked.Exchange(ref curr.Cond, 1);    
+    }    
+    busy = 0;
+}</code></pre>						
+					</section>
+					<section>
+						<h2>Condition Variable</h2>
+						<p>Busy waiting sucks! Use CondVar</p>
+					</section>
+				</section>
+				<section id="monitor">
+					<section>
+						<h2>Monitor</h2>
+						<p>Interface for Lock + CondVar</p>
+												<pre><code data-trim>
+public void Enter() { /* take the ownership of the lock */ }
+public void Exit() { /* give up ownership of the lock */ }
+public void Wait() { /* release the lock, add thread1 to wait queue, sleep, acquire */ }
+public void Pulse() { /* remove the waiting thread1 from wait queue */ }
+</code></pre>
+					</section>
+				</section>	
+				<section id="mcs">
+					<section>
+						<h2>MCS Lock</h2>
+						<p>Uncontended Cache Lines</p>
+						<pre><code data-trim>
+public void Acquire() { /* take the ownership of the lock */ }
+public void Release() { /* give up ownership of the lock */ }
+</code></pre>
+					</section>
+					<section>
+						<h2>MCS Lock</h2>
+						<img src="img/mcs.png"/>
+					</section>
+					<section>
+						<h2>The Contention Problem</h2>
+						<img src="img/contention.png"/>
+					</section>
+					<section>
+						<h2>MCS Lock</h2>
+						<p>Decrease cache line contention at all cost!</p>
+					</section>
+				</section>
+				
+				<section id="future">
+					<section>
+						<h2>Future Research</h2>
+					</section>
+					<section>
+						<h2>Future Research</h2>
+						<ul>
+						<li>CLH Queue Locks + HCLH</li>
+						<li>Lock Free + Wait Free Code</li>
+						<li>The Scalable Commutativity Rule (this is hot!)</li>
+					</ul>
+					</section>
+				</section>
+				<section id="credits">
+					<h2>Thank you!</h2>
+					<p>Bartosz Adamczewski</p>
+					<p>
+						<a href="https://twitter.com/badamczewski01">@badamczewski01</a>
+					</p>
+				</section>
+			</div>
+		</div>
+		
+		<script src="lib/js/head.min.js"></script>
+		<script src="js/reveal.min.js"></script>
+		<script>
+			// Full list of configuration options available here:
+			// https://github.com/hakimel/reveal.js#configuration
+			Reveal.initialize({
+				controls: true,
+				progress: true,
+				history: true,
+				center: true,
+				transition: 'slide',
+
+				theme: Reveal.getQueryHash().theme, // available themes are in /css/theme
+				transition: Reveal.getQueryHash().transition || 'fade', // default/cube/page/concave/zoom/linear/fade/none
+
+				// Parallax scrolling
+				// parallaxBackgroundImage: 'https://s3.amazonaws.com/hakim-static/reveal-js/reveal-parallax-1.jpg',
+				// parallaxBackgroundSize: '2100px 900px',
+
+				// Optional libraries used to extend on reveal.js
+				dependencies: [
+					{ src: 'lib/js/classList.js', condition: function() { return !document.body.classList; } },
+					{ src: 'plugin/markdown/marked.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/markdown/markdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
+					{ src: 'plugin/zoom-js/zoom.js', async: true, condition: function() { return !!document.body.classList; } },
+					{ src: 'plugin/notes/notes.js', async: true, condition: function() { return !!document.body.classList; } }
+				]
+			});
+
+		</script>
+	</body>
+</html>
